@@ -27,9 +27,9 @@ XPATH_XLS      = '//*[@id="ExcelDownload_img"]'
 # ──────────────────────────────────────────────────────────────
 
 # ✅ 변경: 저장 베이스 경로를 "바탕화면/00리앤트 프로그램/리앤트"로
-BASE = Path.home() / "Desktop" / "00리앤트 프로그램" / "리앤트"   # ✅
+BASE = Path(__file__).resolve().parent
 DATA_DIR = BASE / "data"
-TMP_DIR = BASE / "downloads_tmp"
+TMP_DIR  = BASE / "downloads_tmp"
 for d in (DATA_DIR, TMP_DIR):
     d.mkdir(parents=True, exist_ok=True)
 

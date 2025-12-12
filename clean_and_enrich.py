@@ -9,8 +9,9 @@ import pandas as pd
 from pathlib import Path
 
 # ✅ 경로 수정: 00리앤트 프로그램 / 리앤트
-BASE = Path.home() / "Desktop" / "00리앤트 프로그램" / "리앤트"
+BASE = Path(__file__).resolve().parent
 PROC = BASE / "processed"
+PROC.mkdir(parents=True, exist_ok=True)
 SRC  = PROC / "all_data.csv"
 OUT_CLEAN = PROC / "all_data_clean.csv"
 OUT_SUM   = PROC / "by_stock_summary.csv"
