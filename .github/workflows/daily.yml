@@ -1,0 +1,55 @@
+name: Daily Update (Seibro -> Combine -> Enrich)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "1 15 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -U pandas lxml selenium webdriver-manager streamlit altair pillow
+
+      - name: Run downloader (today)
+        run: |
+          python downloader.py
+        env:
+          TZ: Asia/Seoul
+
+      - name: Combine data
+        run: |
+          python combine_data.py
+
+      - name: Clean & enrich
+        run: |
+          python clean_and_enrich.py
+
+      - name: Commit & push updated processed files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add processed/*.csv processed/*.txt processed/*.json || true
+          git status
+          git commit -m "Daily update: processed data" || echo "No changes to commit"
+          git push
