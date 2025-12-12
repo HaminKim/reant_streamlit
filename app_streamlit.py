@@ -1,0 +1,593 @@
+# app_streamlit.py — MA on/off + 네임맵 + 즐겨찾기(저장) + 순매수/순매도 순위 + 조건 필터(20거래일) + 로고 표시
+import json
+import base64
+import re
+from pathlib import Path
+
+import streamlit.components.v1 as components
+import pandas as pd
+import streamlit as st
+import altair as alt
+from urllib.parse import quote_plus
+from PIL import Image  # ✅ 로고 이미지 표시용
+
+FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, \
+'Noto Sans', 'Helvetica Neue', Arial, 'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', \
+'AppleGothic', 'Nanum Gothic', sans-serif"
+
+st.set_page_config(page_title="리버스 개미 대시보드", layout="wide")
+
+# ───────────────────────────
+# 경로 설정 (로고 폴더)
+# ───────────────────────────
+BASE_DIR = Path(__file__).parent
+LOGO_DIR = BASE_DIR / "assets" / "logos"
+
+def find_logo_path(stock_name: str):
+    p = LOGO_DIR / f"{stock_name}.png"
+    if p.exists():
+        return p
+    safe = stock_name.replace("/", "_").replace("\\", "_").replace(":", " ")
+    p2 = LOGO_DIR / f"{safe}.png"
+    return p2 if p2.exists() else None
+
+# ✅ HTML 한 줄: 로고 + 종목명
+def render_title_line(logo_path: str, sel_disp: str, size: int = 86, align: str = "center"):
+    m = re.match(r'^(.*?)\s*\((.+)\)\s*$', sel_disp)
+    has_korean = bool(m)
+
+    if has_korean:
+        korean  = (m.group(1) or "").strip()
+        english = (m.group(2) or "").strip()
+    else:
+        korean  = None
+        english = sel_disp.strip()
+
+    logo_b64 = ""
+    if logo_path:
+        try:
+            with open(logo_path, "rb") as f:
+                logo_b64 = base64.b64encode(f.read()).decode()
+        except Exception:
+            logo_b64 = ""
+
+    jc = {"left": "flex-start", "center": "center", "right": "flex-end"}.get(align, "center")
+
+    # 텍스트(영문은 항상 14px, 볼드 X / 한글 26px Bold)
+    if has_korean:
+        text_html = f"""
+            <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-family:{FONT_STACK};">
+                <span style="font-size:32px;font-weight:700;line-height:1;">{korean}</span>
+                <span style="font-size:14px;font-weight:400;color:#666;line-height:1;">({english})</span>
+            </div>
+        """
+    else:
+        text_html = f"""
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-family:{FONT_STACK};">
+                <span style="font-size:14px;font-weight:400;color:#222;line-height:1;">{english}</span>
+            </div>
+        """
+
+    body = (
+        f"""
+        <div style="display:flex;align-items:center;justify-content:{jc};
+                    gap:10px;margin:8px 0 10px 0;font-family:{FONT_STACK};">
+            <img src="data:image/png;base64,{logo_b64}" width="{size}" height="{size}"
+                 style="object-fit:contain;border-radius:8px;" />
+            {text_html}
+        </div>
+        """
+        if logo_b64 else
+        f"""
+        <div style="display:flex;align-items:center;justify-content:{jc};
+                    gap:10px;margin:8px 0 10px 0;font-family:{FONT_STACK};">
+            {text_html}
+        </div>
+        """
+    )
+
+    components.html(body, height=max(size, 26) + 28, scrolling=False)
+# ───────────────────────────
+# 즐겨찾기 저장/로드
+# ───────────────────────────
+FAV_PATH = Path("processed/favorites.json")
+
+def load_favorites() -> set:
+    try:
+        if FAV_PATH.exists():
+            with open(FAV_PATH, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+    except Exception:
+        pass
+    return set()
+
+def save_favorites(favs: set):
+    FAV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(FAV_PATH, "w", encoding="utf-8") as f:
+        json.dump(sorted(list(favs)), f, ensure_ascii=False, indent=2)
+
+def toggle_favorite(code: str):
+    favs = st.session_state.get("favs", set())
+    if code in favs:
+        favs.remove(code)
+    else:
+        favs.add(code)
+    st.session_state["favs"] = favs
+    save_favorites(favs)
+
+# ───────────────────────────
+# 📂 데이터 불러오기
+# ───────────────────────────
+@st.cache_data
+def load_data():
+    df = pd.read_csv("processed/all_data_clean.csv", parse_dates=["날짜"], encoding="utf-8-sig")
+
+    need_base = {"날짜", "종목명", "매수", "매도", "순매수"}
+    miss_base = need_base - set(df.columns)
+    if miss_base:
+        raise ValueError(f"필수 컬럼 누락: {miss_base}")
+
+    for n in (5, 10, 20):
+        col = f"MA{n}"
+        if col not in df.columns:
+            df[col] = (
+                df.groupby("종목명")["순매수"]
+                  .rolling(window=n, min_periods=n)
+                  .mean()
+                  .reset_index(level=0, drop=True)
+            )
+
+    try:
+        name_map_df = pd.read_csv("processed/name_map.csv")
+        if {"영문명", "한글명"} <= set(name_map_df.columns):
+            name_map = dict(zip(name_map_df["영문명"], name_map_df["한글명"]))
+            df["표시명"] = df["종목명"].map(name_map)
+            df["표시명"] = df.apply(
+                lambda r: f"{r['표시명']} ({r['종목명']})" if pd.notna(r["표시명"]) else r["종목명"],
+                axis=1,
+            )
+        else:
+            df["표시명"] = df["종목명"]
+    except Exception:
+        df["표시명"] = df["종목명"]
+
+    return df.sort_values(["종목명", "날짜"])
+
+df = load_data()
+if "favs" not in st.session_state:
+    st.session_state["favs"] = load_favorites()
+
+# ───────────────────────────
+# 기본 설정
+# ───────────────────────────
+qp = st.query_params
+initial_tab = (qp.get("tab") or "chart")
+initial_stock = (qp.get("stock") or "TESLA INC")
+
+min_date = df["날짜"].min().date()
+max_date = df["날짜"].max().date()
+default_start = max(min_date, pd.to_datetime("2025-01-01").date())
+default_end   = max_date
+
+tab_names = ["📈 종목별 차트", "🏆 인기 종목 TOP50", "📊 순매수·순매도 순위", "🧪 조건 필터"]
+tab_choice = st.radio(
+    "보기", tab_names, horizontal=True,
+    index=0 if initial_tab == "chart" else (1 if initial_tab == "top" else 2)
+)
+
+# 👉 슬라이더 값을 프로그램적으로 바꿀 때는 슬라이더 key도 함께 업데이트해야 함!
+def _set_date_slider(value_tuple):
+    st.session_state["range_value"] = value_tuple
+    st.session_state["range_slider"] = value_tuple  # ← 실제 위젯 상태 갱신
+
+def _set_rank_slider(value_tuple):
+    st.session_state["rank_range"] = value_tuple
+    st.session_state["rank_range_slider"] = value_tuple  # ← 실제 위젯 상태 갱신
+
+def compute_last_n_trading_days(stock: str, n: int):
+    dts = (
+        df.loc[df["종목명"] == stock, "날짜"]
+          .dt.date.drop_duplicates().sort_values().tolist()
+    )
+    if not dts:
+        _set_date_slider((default_start, default_end))
+        return
+    end = dts[-1]
+    start = dts[-n] if len(dts) >= n else dts[0]
+    _set_date_slider((start, end))
+
+def fmt_usd(x):
+    try:
+        return f"${x:,.0f}"
+    except Exception:
+        return "-"
+
+# ───────────────────────────
+# 📈 종목별 차트
+# ───────────────────────────
+if tab_choice == tab_names[0]:
+    st.markdown("### 📊 종목별 순매수 추이")
+
+    stocks_disp = sorted(df["표시명"].dropna().unique().tolist())
+    code_to_disp = (
+        df[["종목명", "표시명"]]
+        .drop_duplicates(subset=["종목명"])
+        .set_index("종목명")["표시명"]
+        .to_dict()
+    )
+    disp_to_code = {v: k for k, v in code_to_disp.items()}
+
+    stock_param = qp.get("stock")
+    if stock_param and stock_param in code_to_disp:
+        preselect_disp = code_to_disp[stock_param]
+        default_idx = stocks_disp.index(preselect_disp) if preselect_disp in stocks_disp else 0
+    else:
+        default_idx = 0
+
+    left, right = st.columns(2)
+    with left:
+        sel_disp = st.selectbox("📈 종목 선택", stocks_disp, index=default_idx, key="stock_select")
+    with right:
+        st.markdown("**⭐ 즐겨찾기**")
+        favs: set = st.session_state.get("favs", set())
+        fav_disp_list = sorted([code_to_disp[c] for c in favs if c in code_to_disp])
+        fav_disp_list = ["(선택)"] + fav_disp_list if fav_disp_list else ["(즐겨찾기 없음)"]
+
+        pick = st.selectbox("즐겨찾기 바로가기", fav_disp_list, key="fav_jump")
+        if pick and pick not in ("(선택)", "(즐겨찾기 없음)"):
+            sel_disp = pick
+
+        cur_code = disp_to_code.get(sel_disp, sel_disp)
+        is_fav = cur_code in favs
+        star_label = "⭐ 즐겨찾기 취소" if is_fav else "☆ 즐겨찾기 추가"
+        st.button(star_label, key="fav_toggle_btn", on_click=toggle_favorite, args=(cur_code,))
+
+    sel_stock = disp_to_code.get(sel_disp, sel_disp)
+
+    if "range_value" not in st.session_state:
+        _set_date_slider((default_start, default_end))
+
+    Toggle = getattr(st, "toggle", st.checkbox)
+
+    col1, col2, col3, col4, spacer, col5, col6, col7 = st.columns([1, 1, 1, 1, 3, 1, 1, 1])
+    with col1:  st.button("1주 (5일)",  key="btn_5",  on_click=compute_last_n_trading_days, args=(sel_stock, 5))
+    with col2:  st.button("1개월 (20일)", key="btn_20", on_click=compute_last_n_trading_days, args=(sel_stock, 20))
+    with col3:  st.button("3개월 (60일)", key="btn_60", on_click=compute_last_n_trading_days, args=(sel_stock, 60))
+    with col4:  st.button("6개월 (120일)", key="btn_120", on_click=compute_last_n_trading_days, args=(sel_stock, 120))
+
+    with col5:  st.write("**지표**")
+    with col6:  ma5_on  = Toggle("MA5",  value=False, key="tg_ma5")
+    with col7:  ma10_on = Toggle("MA10", value=True,  key="tg_ma10")
+    with spacer: ma20_on = Toggle("MA20", value=True,  key="tg_ma20")
+
+    date_range = st.slider(
+        "기간 선택", min_value=min_date, max_value=max_date,
+        value=st.session_state["range_value"], key="range_slider", format="YYYY-MM-DD",
+    )
+
+    dcount = int(
+        df.loc[
+            (df["종목명"] == sel_stock)
+            & (df["날짜"].dt.date >= date_range[0])
+            & (df["날짜"].dt.date <= date_range[1]),
+            "날짜"
+        ].dt.date.nunique()
+    )
+    st.markdown(
+        f"<div style='text-align:center; color:#666; margin:-6px 0 8px;'>"
+        f"<strong>기간 합계</strong> ({date_range[0]} ~ {date_range[1]}, {dcount}일)"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    mask = (
+        (df["종목명"] == sel_stock)
+        & (df["날짜"].dt.date >= date_range[0])
+        & (df["날짜"].dt.date <= date_range[1])
+    )
+    data = df.loc[mask].copy().sort_values("날짜")
+    if data.empty:
+        st.warning("선택한 종목/기간의 데이터가 없습니다.")
+        st.stop()
+
+    # 로고+종목명
+    mid_l, mid_c, mid_r = st.columns([1, 2, 1])
+    with mid_c:
+        logo_path = find_logo_path(sel_stock)
+        render_title_line(logo_path, sel_disp, size=86, align="center")
+
+    # KPI
+    total_buy  = float(data["매수"].sum())
+    total_sell = float(data["매도"].sum())
+    total_net  = float(data["순매수"].sum())
+    ratio = (total_buy / total_sell) if total_sell != 0 else None
+
+    st.markdown("""
+        <style>
+        .kpi-wrap{display:flex; gap:2rem; justify-content:space-between; margin:6px 0 10px 0;}
+        .kpi{flex:1; text-align:center;}
+        .kpi-label{font-weight:700; font-size:0.95rem; margin-bottom:0.15rem;}
+        .kpi-buy{color:#d62728;} .kpi-sell{color:#1f77b4;}
+        .kpi-value{font-weight:600; font-size:1.6rem; line-height:1.1; margin:0; padding:0;}
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class='kpi-wrap'>
+      <div class='kpi'><div class='kpi-label kpi-buy'>총 매수(USD)</div><div class='kpi-value'>{fmt_usd(total_buy)}</div></div>
+      <div class='kpi'><div class='kpi-label kpi-sell'>총 매도(USD)</div><div class='kpi-value'>{fmt_usd(total_sell)}</div></div>
+      <div class='kpi'><div class='kpi-label'>총 순매수(USD)</div><div class='kpi-value'>{fmt_usd(total_net)}</div></div>
+      <div class='kpi'><div class='kpi-label'>⚖️ 매수:매도 비율</div><div class='kpi-value'>{(f"{ratio:.2f} : 1" if ratio else "-")}</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 차트
+    data["날짜_str"] = data["날짜"].dt.strftime("%Y-%m-%d")
+    x_enc = alt.X("날짜_str:N", title="거래일", sort=None)
+
+    bar = (
+        alt.Chart(data)
+        .mark_bar()
+        .encode(
+            x=x_enc,
+            y=alt.Y("순매수:Q", title="순매수, MA"),
+            color=alt.condition("datum.순매수 >= 0", alt.value("#d62728"), alt.value("#1f77b4")),
+            tooltip=[
+                alt.Tooltip("날짜:T", title="날짜"),
+                alt.Tooltip("표시명:N", title="종목"),
+                alt.Tooltip("순매수:Q", title="순매수", format=",.0f"),
+            ],
+        )
+    )
+
+    ma_cols = []
+    if ma5_on:  ma_cols.append("MA5")
+    if ma10_on: ma_cols.append("MA10")
+    if ma20_on: ma_cols.append("MA20")
+
+    layers = [bar]
+    if ma_cols:
+        lines_df = data.melt(
+            id_vars=["날짜", "날짜_str"],
+            value_vars=ma_cols,
+            var_name="지표",
+            value_name="값",
+        )
+        line = (
+            alt.Chart(lines_df)
+            .mark_line(strokeWidth=2)
+            .encode(
+                x=x_enc,
+                y=alt.Y("값:Q"),
+                color=alt.Color(
+                    "지표:N",
+                    title=None,
+                    scale=alt.Scale(
+                        domain=["MA5", "MA10", "MA20"],
+                        range=["#ff69b4", "#f5d76e", "#6a5acd"]
+                    ),
+                    legend=alt.Legend(orient="top-right"),
+                ),
+                tooltip=[
+                    alt.Tooltip("날짜:T", title="날짜"),
+                    alt.Tooltip("지표:N"),
+                    alt.Tooltip("값:Q", title="값", format=",.0f"),
+                ]
+            )
+        )
+        layers.append(line)
+
+    chart = alt.layer(*layers).resolve_scale(y="shared").properties(height=520)
+    st.altair_chart(chart, use_container_width=True)
+
+# ───────────────────────────
+# 🏆 인기 종목 TOP50
+# ───────────────────────────
+elif tab_choice == tab_names[1]:
+    st.markdown("### 🏆 인기 종목 TOP50 (등장일수 기준)")
+    df_period = df[(df["날짜"].dt.date >= default_start) & (df["날짜"].dt.date <= default_end)]
+    if df_period.empty:
+        st.warning("선택 기간 데이터가 없습니다."); st.stop()
+    n_days = df_period["날짜"].dt.date.nunique()
+    hits = (
+        df_period.dropna(subset=["표시명"])
+        .groupby(["표시명", "종목명"])["날짜"].nunique()
+        .reset_index(name="등장일수")
+        .sort_values("등장일수", ascending=False)
+        .head(50)
+    )
+    hits["커버리지(%)"] = (hits["등장일수"] / n_days * 100).round(1)
+    hits["link"] = hits["종목명"].apply(lambda s: f"?tab=chart&stock={quote_plus(str(s))}")
+    chart_top = (
+        alt.Chart(hits)
+        .mark_bar()
+        .encode(
+            x=alt.X("등장일수:Q", title="등장 일수"),
+            y=alt.Y("표시명:N", sort="-x",
+                    axis=alt.Axis(labelOverlap=False, labelLimit=2000, labelFontSize=11)),
+            color=alt.Color("등장일수:Q", legend=None, scale=alt.Scale(scheme="blues")),
+            href=alt.Href("link:N"),
+            tooltip=["표시명:N", "등장일수:Q", "커버리지(%):Q"],
+        )
+        .properties(height=1200)
+    )
+    st.altair_chart(chart_top, use_container_width=True)
+
+# ───────────────────────────
+# 📊 순매수/순매도 순위 (기간 버튼 + 슬라이더)
+# ───────────────────────────
+elif tab_choice == tab_names[2]:
+    st.markdown("### 📊 순매수·순매도 상위 종목")
+
+    # 최근 N거래일 버튼
+    col0, col1, col2, col3, col4, col5, _ = st.columns([1, 1, 1, 1, 1, 1, 4.5])
+    with col0: period_1  = st.button("1일",  key="btn_r_1")
+    with col1: period_5  = st.button("5일",  key="btn_r_5")
+    with col2: period_10 = st.button("10일", key="btn_r_10")
+    with col3: period_20 = st.button("20일", key="btn_r_20")
+    with col4: period_40 = st.button("40일", key="btn_r_40")
+    with col5: period_60 = st.button("60일", key="btn_r_60")
+
+    trading_days = sorted(df["날짜"].dt.date.unique().tolist())
+    t_min, t_max = trading_days[0], trading_days[-1]
+
+    def set_rank_range_last_n(n: int):
+        start = trading_days[-n] if len(trading_days) >= n else t_min
+        _set_rank_slider((start, t_max))
+
+    if "rank_range" not in st.session_state:
+        set_rank_range_last_n(20)
+
+    if period_1:  set_rank_range_last_n(1)
+    if period_5:  set_rank_range_last_n(5)
+    if period_10: set_rank_range_last_n(10)
+    if period_20: set_rank_range_last_n(20)
+    if period_40: set_rank_range_last_n(40)
+    if period_60: set_rank_range_last_n(60)
+
+    rank_range = st.slider(
+        "기간 선택",
+        min_value=t_min,
+        max_value=t_max,
+        value=st.session_state["rank_range"],
+        key="rank_range_slider",
+        format="YYYY-MM-DD",
+    )
+    st.session_state["rank_range"] = rank_range  # 드래그 시 세션 동기화
+
+    mode = st.radio("보기", ["순매수 상위", "순매도 상위"], horizontal=True)
+
+    start, end = rank_range
+    period_df = df[(df["날짜"].dt.date >= start) & (df["날짜"].dt.date <= end)]
+
+    agg = (
+        period_df
+        .groupby(["표시명", "종목명"], as_index=False)[["매수", "매도", "순매수"]]
+        .sum()
+        .rename(columns={"매수":"매수합계","매도":"매도합계"})
+    )
+
+    if mode == "순매도 상위":
+        agg["순매도합계"] = -agg["순매수"]
+        plot_df = agg[agg["순매도합계"] > 0].sort_values("순매도합계", ascending=False).head(50)
+        color_scale = alt.Scale(domain=[0, (plot_df["순매도합계"].max() if len(plot_df) else 1)],
+                                range=["#a6c8ff", "#1f77b4"])
+        x_field = "순매도합계:Q"
+        x_title = "순매도 합계 (USD)"
+        tooltip_fields = [
+            "표시명:N",
+            alt.Tooltip("순매도합계:Q", title="순매도", format=",.0f"),
+            alt.Tooltip("매수합계:Q",   title="매수",   format=",.0f"),
+            alt.Tooltip("매도합계:Q",   title="매도",   format=",.0f"),
+        ]
+    else:
+        plot_df = agg[agg["순매수"] > 0].sort_values("순매수", ascending=False).head(50)
+        color_scale = alt.Scale(domain=[0, (plot_df["순매수"].max() if len(plot_df) else 1)],
+                                range=["#ffb3b3", "#d62728"])
+        x_field = "순매수:Q"
+        x_title = "순매수 합계 (USD)"
+        tooltip_fields = [
+            "표시명:N",
+            alt.Tooltip("순매수:Q",   title="순매수", format=",.0f"),
+            alt.Tooltip("매수합계:Q", title="매수",   format=",.0f"),
+            alt.Tooltip("매도합계:Q", title="매도",   format=",.0f"),
+        ]
+
+    plot_df["link"] = plot_df["종목명"].apply(lambda s: f"?tab=chart&stock={quote_plus(str(s))}")
+
+    chart_rank = (
+        alt.Chart(plot_df)
+        .mark_bar()
+        .encode(
+            x=alt.X(x_field, title=x_title, scale=alt.Scale(domainMin=0, nice=True)),
+            y=alt.Y("표시명:N", sort="-x", title=None,
+                    axis=alt.Axis(labelLimit=2500, labelFontSize=11)),
+            color=alt.Color(x_field, legend=None, scale=color_scale),
+            href=alt.Href("link:N"),
+            tooltip=tooltip_fields,
+        )
+        .properties(height=1200)
+    )
+    st.altair_chart(chart_rank, use_container_width=True)
+
+# ───────────────────────────
+# 🧪 조건 필터 (최근 20거래일 + MA 조건 교집합)
+# ───────────────────────────
+elif tab_choice == tab_names[3]:
+    st.markdown("### 🧪 조건 필터 (교집합 AND, 최근 20거래일)")
+
+    Toggle = getattr(st, "toggle", st.checkbox)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        use_ratio = Toggle("최근 20일 매수/매도 ≤ 0.9", value=True,
+                           help="최근 20 거래일간 BUY/SELL 합계 비율")
+    with c2:
+        use_ma5  = Toggle("MA5 ≤ 0",  value=True)
+    with c3:
+        use_ma10 = Toggle("MA10 ≤ 0", value=False)
+    with c4:
+        use_ma20 = Toggle("MA20 ≤ 0", value=False)
+
+    trade_days = sorted(df["날짜"].dt.date.unique())
+    if not trade_days:
+        st.warning("데이터가 없습니다."); st.stop()
+
+    last_day = trade_days[-1]
+    start_idx = max(0, len(trade_days) - 20)
+    first_day = trade_days[start_idx]
+
+    period_df = df[(df["날짜"].dt.date >= first_day) & (df["날짜"].dt.date <= last_day)].copy()
+
+    agg = (
+        period_df.groupby(["종목명", "표시명"], as_index=False)[["매수", "매도"]].sum()
+        .rename(columns={"매수": "최근20일_매수합", "매도": "최근20일_매도합"})
+    )
+    agg["비율(BUY/SELL)"] = agg.apply(
+        lambda r: (r["최근20일_매수합"] / r["최근20일_매도합"]) if r["최근20일_매도합"] not in (0, None) else float("inf"),
+        axis=1
+    )
+
+    last_ma = (
+    period_df
+    .sort_values("날짜")  # 날짜 순으로 정렬
+    .groupby(["종목명", "표시명"], as_index=False)[["MA5", "MA10", "MA20"]]
+    .last()  # 각 종목별 마지막 행
+    )
+
+    res = pd.merge(agg, last_ma, on=["종목명", "표시명"], how="left")
+    
+
+    cond = pd.Series([True] * len(res))
+    if use_ratio:
+        cond &= (res["비율(BUY/SELL)"] <= 0.9)
+    if use_ma5:
+        cond &= (res["MA5"] <= 0)
+    if use_ma10:
+        cond &= (res["MA10"] <= 0)
+    if use_ma20:
+        cond &= (res["MA20"] <= 0)
+
+    filtered = res.loc[cond].copy()
+
+    filtered = filtered.sort_values(
+        by=["비율(BUY/SELL)", "최근20일_매수합"],
+        ascending=[True, False]
+    )
+
+    for c in ["최근20일_매수합", "최근20일_매도합", "MA5", "MA10", "MA20"]:
+        if c in filtered.columns:
+            filtered[c] = filtered[c].round(0)
+
+    filtered["link"] = filtered["종목명"].apply(lambda s: f"?tab=chart&stock={quote_plus(str(s))}")
+
+    st.caption(f"기간: {first_day} ~ {last_day} (총 {len(trade_days[start_idx:])} 거래일)")
+    st.write(f"**적용 조건 수:** {sum([use_ratio, use_ma5, use_ma10, use_ma20])}개 | **결과 종목:** {len(filtered)}개")
+
+    show_cols = ["표시명", "종목명", "최근20일_매수합", "최근20일_매도합", "비율(BUY/SELL)", "MA5", "MA10", "MA20"]
+    st.dataframe(filtered[show_cols], use_container_width=True, hide_index=True)
+
+    names = ["(선택)"] + filtered["표시명"].tolist()
+    pick = st.selectbox("결과에서 선택 → 차트 보기", names, index=0)
+    if pick and pick != "(선택)":
+        code = filtered.loc[filtered["표시명"] == pick, "종목명"].iloc[0]
+        st.markdown(f"[📈 차트로 이동]({f'?tab=chart&stock={quote_plus(str(code))}'})")
