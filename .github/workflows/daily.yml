@@ -35,14 +35,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -U pandas lxml selenium webdriver-manager streamlit altair pillow
 
-      # 4️⃣ 다운로더 실행 (어제 1일치만)
-      - name: Run downloader (yesterday, KST)
-        env:
-          TZ: Asia/Seoul
+      # 4️⃣ 다운로더 실행 (최근 7일치 중 성공되면 끝)
+      - name: Run downloader (find latest available day, KST)
+        shell: bash
         run: |
-          YMD=$(date -d "yesterday" +%Y%m%d)
-          echo "📥 Downloading Seibro data for: $YMD"
-          python downloader.py $YMD $YMD
+          set -e
+          export TZ=Asia/Seoul
+
+          echo "🔎 Try downloading the latest available day (up to 7 days back)..."
+
+          success=0
+          for i in 1 2 3 4 5 6 7; do
+            YMD=$(date -d "$i day ago" +%Y%m%d)
+            echo ""
+            echo "👉 Try YMD=$YMD"
+            python downloader.py "$YMD" "$YMD" && success=1 && break
+          done
+
+          if [ "$success" -ne 1 ]; then
+            echo "❌ No downloadable day found in the last 7 days."
+            exit 1
+          fi
 
       # 5️⃣ 콤바인
       - name: Combine data
