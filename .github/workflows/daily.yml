@@ -2,8 +2,12 @@ name: Daily Update (Seibro -> Combine -> Enrich)
 
 on:
   workflow_dispatch:
+    inputs:
+      ymd:
+        description: "다운로드할 날짜 (YYYYMMDD). 비우면 최근 7일 자동탐색"
+        required: false
+        default: ""
   schedule:
-    # 매일 한국시간 00:01 (UTC 15:01)
     - cron: "1 15 * * *"
 
 permissions:
@@ -36,14 +40,20 @@ jobs:
           pip install -U pandas lxml selenium webdriver-manager streamlit altair pillow
 
       # 4️⃣ 다운로더 실행 (최근 7일치 중 성공되면 끝)
-      - name: Run downloader (find latest available day, KST)
+      - name: Run downloader (manual date or find latest available day, KST)
         shell: bash
         run: |
           set -e
           export TZ=Asia/Seoul
 
-          echo "🔎 Try downloading the latest available day (up to 7 days back)..."
+          if [ -n "${{ github.event.inputs.ymd }}" ]; then
+            YMD="${{ github.event.inputs.ymd }}"
+            echo "🟦 Manual download: $YMD"
+            python downloader.py "$YMD" "$YMD"
+            exit 0
+          fi
 
+          echo "🔎 Auto: Try downloading the latest available day (up to 7 days back)..."
           success=0
           for i in 1 2 3 4 5 6 7; do
             YMD=$(date -d "$i day ago" +%Y%m%d)
@@ -56,6 +66,7 @@ jobs:
             echo "❌ No downloadable day found in the last 7 days."
             exit 1
           fi
+
 
       # 5️⃣ 콤바인
       - name: Combine data
