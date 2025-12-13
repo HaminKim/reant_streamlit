@@ -3,6 +3,7 @@ import json
 import base64
 import re
 from pathlib import Path
+import time
 
 import streamlit.components.v1 as components
 import pandas as pd
@@ -11,17 +12,29 @@ import altair as alt
 from urllib.parse import quote_plus
 from PIL import Image  # ✅ 로고 이미지 표시용
 
-FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, \
-'Noto Sans', 'Helvetica Neue', Arial, 'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', \
-'AppleGothic', 'Nanum Gothic', sans-serif"
+FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, " \
+"Noto Sans', 'Helvetica Neue', Arial, 'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', " \
+"'AppleGothic', 'Nanum Gothic', sans-serif"
 
 st.set_page_config(page_title="리버스 개미 대시보드", layout="wide")
 
 # ───────────────────────────
-# 경로 설정 (로고 폴더)
+# 경로 설정
 # ───────────────────────────
 BASE_DIR = Path(__file__).parent
 LOGO_DIR = BASE_DIR / "assets" / "logos"
+
+PROC_DIR = BASE_DIR / "processed"
+DATA_PATH = PROC_DIR / "all_data_clean.csv"
+NAME_MAP_PATH = PROC_DIR / "name_map.csv"
+FAV_PATH = PROC_DIR / "favorites.json"
+
+def get_mtime(p: Path) -> float:
+    """파일 수정시간(초). 없으면 0."""
+    try:
+        return p.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
 
 def find_logo_path(stock_name: str):
     p = LOGO_DIR / f"{stock_name}.png"
@@ -87,11 +100,10 @@ def render_title_line(logo_path: str, sel_disp: str, size: int = 86, align: str 
     )
 
     components.html(body, height=max(size, 26) + 28, scrolling=False)
+
 # ───────────────────────────
 # 즐겨찾기 저장/로드
 # ───────────────────────────
-FAV_PATH = Path("processed/favorites.json")
-
 def load_favorites() -> set:
     try:
         if FAV_PATH.exists():
@@ -116,17 +128,26 @@ def toggle_favorite(code: str):
     save_favorites(favs)
 
 # ───────────────────────────
-# 📂 데이터 불러오기
+# 📂 데이터 불러오기 (자동 갱신)
 # ───────────────────────────
-@st.cache_data
-def load_data():
-    df = pd.read_csv("processed/all_data_clean.csv", parse_dates=["날짜"], encoding="utf-8-sig")
+@st.cache_data(ttl=600)  # ✅ 10분마다 자동 만료(보험). 필요하면 60으로 줄여도 됨.
+def load_data(_data_mtime: float, _map_mtime: float):
+    """
+    ✅ 캐시 키에 mtime을 포함시켜서
+    - all_data_clean.csv가 갱신되면 자동으로 캐시 무효화
+    - name_map.csv가 갱신돼도 자동 반영
+    """
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(f"데이터 파일이 없습니다: {DATA_PATH}")
+
+    df = pd.read_csv(DATA_PATH, parse_dates=["날짜"], encoding="utf-8-sig")
 
     need_base = {"날짜", "종목명", "매수", "매도", "순매수"}
     miss_base = need_base - set(df.columns)
     if miss_base:
         raise ValueError(f"필수 컬럼 누락: {miss_base}")
 
+    # MA 컬럼 없으면 생성(호환)
     for n in (5, 10, 20):
         col = f"MA{n}"
         if col not in df.columns:
@@ -137,15 +158,19 @@ def load_data():
                   .reset_index(level=0, drop=True)
             )
 
+    # 네임맵(있으면 적용)
     try:
-        name_map_df = pd.read_csv("processed/name_map.csv")
-        if {"영문명", "한글명"} <= set(name_map_df.columns):
-            name_map = dict(zip(name_map_df["영문명"], name_map_df["한글명"]))
-            df["표시명"] = df["종목명"].map(name_map)
-            df["표시명"] = df.apply(
-                lambda r: f"{r['표시명']} ({r['종목명']})" if pd.notna(r["표시명"]) else r["종목명"],
-                axis=1,
-            )
+        if NAME_MAP_PATH.exists():
+            name_map_df = pd.read_csv(NAME_MAP_PATH)
+            if {"영문명", "한글명"} <= set(name_map_df.columns):
+                name_map = dict(zip(name_map_df["영문명"], name_map_df["한글명"]))
+                df["표시명"] = df["종목명"].map(name_map)
+                df["표시명"] = df.apply(
+                    lambda r: f"{r['표시명']} ({r['종목명']})" if pd.notna(r["표시명"]) else r["종목명"],
+                    axis=1,
+                )
+            else:
+                df["표시명"] = df["종목명"]
         else:
             df["표시명"] = df["종목명"]
     except Exception:
@@ -153,7 +178,10 @@ def load_data():
 
     return df.sort_values(["종목명", "날짜"])
 
-df = load_data()
+# ✅ mtime을 매 실행마다 다시 계산 → 파일 바뀌면 캐시 자동 갱신
+df = load_data(get_mtime(DATA_PATH), get_mtime(NAME_MAP_PATH))
+
+# 즐겨찾기 초기화
 if "favs" not in st.session_state:
     st.session_state["favs"] = load_favorites()
 
@@ -362,10 +390,6 @@ if tab_choice == tab_names[0]:
                 color=alt.Color(
                     "지표:N",
                     title=None,
-                    scale=alt.Scale(
-                        domain=["MA5", "MA10", "MA20"],
-                        range=["#ff69b4", "#f5d76e", "#6a5acd"]
-                    ),
                     legend=alt.Legend(orient="top-right"),
                 ),
                 tooltip=[
@@ -405,8 +429,6 @@ elif tab_choice == tab_names[1]:
             x=alt.X("등장일수:Q", title="등장 일수"),
             y=alt.Y("표시명:N", sort="-x",
                     axis=alt.Axis(labelOverlap=False, labelLimit=2000, labelFontSize=11)),
-            color=alt.Color("등장일수:Q", legend=None, scale=alt.Scale(scheme="blues")),
-            href=alt.Href("link:N"),
             tooltip=["표시명:N", "등장일수:Q", "커버리지(%):Q"],
         )
         .properties(height=1200)
@@ -414,12 +436,11 @@ elif tab_choice == tab_names[1]:
     st.altair_chart(chart_top, use_container_width=True)
 
 # ───────────────────────────
-# 📊 순매수/순매도 순위 (기간 버튼 + 슬라이더)
+# 📊 순매수/순매도 순위
 # ───────────────────────────
 elif tab_choice == tab_names[2]:
     st.markdown("### 📊 순매수·순매도 상위 종목")
 
-    # 최근 N거래일 버튼
     col0, col1, col2, col3, col4, col5, _ = st.columns([1, 1, 1, 1, 1, 1, 4.5])
     with col0: period_1  = st.button("1일",  key="btn_r_1")
     with col1: period_5  = st.button("5일",  key="btn_r_5")
@@ -453,7 +474,7 @@ elif tab_choice == tab_names[2]:
         key="rank_range_slider",
         format="YYYY-MM-DD",
     )
-    st.session_state["rank_range"] = rank_range  # 드래그 시 세션 동기화
+    st.session_state["rank_range"] = rank_range
 
     mode = st.radio("보기", ["순매수 상위", "순매도 상위"], horizontal=True)
 
@@ -470,8 +491,6 @@ elif tab_choice == tab_names[2]:
     if mode == "순매도 상위":
         agg["순매도합계"] = -agg["순매수"]
         plot_df = agg[agg["순매도합계"] > 0].sort_values("순매도합계", ascending=False).head(50)
-        color_scale = alt.Scale(domain=[0, (plot_df["순매도합계"].max() if len(plot_df) else 1)],
-                                range=["#a6c8ff", "#1f77b4"])
         x_field = "순매도합계:Q"
         x_title = "순매도 합계 (USD)"
         tooltip_fields = [
@@ -482,8 +501,6 @@ elif tab_choice == tab_names[2]:
         ]
     else:
         plot_df = agg[agg["순매수"] > 0].sort_values("순매수", ascending=False).head(50)
-        color_scale = alt.Scale(domain=[0, (plot_df["순매수"].max() if len(plot_df) else 1)],
-                                range=["#ffb3b3", "#d62728"])
         x_field = "순매수:Q"
         x_title = "순매수 합계 (USD)"
         tooltip_fields = [
@@ -502,8 +519,6 @@ elif tab_choice == tab_names[2]:
             x=alt.X(x_field, title=x_title, scale=alt.Scale(domainMin=0, nice=True)),
             y=alt.Y("표시명:N", sort="-x", title=None,
                     axis=alt.Axis(labelLimit=2500, labelFontSize=11)),
-            color=alt.Color(x_field, legend=None, scale=color_scale),
-            href=alt.Href("link:N"),
             tooltip=tooltip_fields,
         )
         .properties(height=1200)
@@ -511,7 +526,7 @@ elif tab_choice == tab_names[2]:
     st.altair_chart(chart_rank, use_container_width=True)
 
 # ───────────────────────────
-# 🧪 조건 필터 (최근 20거래일 + MA 조건 교집합)
+# 🧪 조건 필터
 # ───────────────────────────
 elif tab_choice == tab_names[3]:
     st.markdown("### 🧪 조건 필터 (교집합 AND, 최근 20거래일)")
@@ -548,14 +563,13 @@ elif tab_choice == tab_names[3]:
     )
 
     last_ma = (
-    period_df
-    .sort_values("날짜")  # 날짜 순으로 정렬
-    .groupby(["종목명", "표시명"], as_index=False)[["MA5", "MA10", "MA20"]]
-    .last()  # 각 종목별 마지막 행
+        period_df
+        .sort_values("날짜")
+        .groupby(["종목명", "표시명"], as_index=False)[["MA5", "MA10", "MA20"]]
+        .last()
     )
 
     res = pd.merge(agg, last_ma, on=["종목명", "표시명"], how="left")
-    
 
     cond = pd.Series([True] * len(res))
     if use_ratio:
@@ -577,8 +591,6 @@ elif tab_choice == tab_names[3]:
     for c in ["최근20일_매수합", "최근20일_매도합", "MA5", "MA10", "MA20"]:
         if c in filtered.columns:
             filtered[c] = filtered[c].round(0)
-
-    filtered["link"] = filtered["종목명"].apply(lambda s: f"?tab=chart&stock={quote_plus(str(s))}")
 
     st.caption(f"기간: {first_day} ~ {last_day} (총 {len(trade_days[start_idx:])} 거래일)")
     st.write(f"**적용 조건 수:** {sum([use_ratio, use_ma5, use_ma10, use_ma20])}개 | **결과 종목:** {len(filtered)}개")
