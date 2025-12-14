@@ -286,7 +286,7 @@ with t_chart:
     # ✅ 여기서 st.stop() 절대 쓰지 않음.
     # 종목 미선택이면 안내만 보여주고, 차트 렌더링만 스킵.
     if sel_disp == PLACEHOLDER or not sel_disp:
-        st.info("종목을 선택해 순매도 흐름을 분석하세요!")
+        st.info("종목을 선택해 해당 종목의 순매수/순매도 흐름을 분석하세요!")
     else:
         sel_stock = disp_to_code.get(sel_disp, sel_disp)
 
