@@ -279,7 +279,8 @@ with t_chart:
         with head_r:
             with st.popover("ⓘ"):
                 st.write("SEIBRO에 매일 업데이트 되는 한국인 매수·매도 TOP50 종목들입니다.")
-                st.write("데이터는 2024년 10월부터 수집되었고, 매일 갱신됩니다.")
+                st.write("데이터는 2024년 10월부터 수집되었고, ")
+                st.write("매일 새벽 00:10에 새로 갱신됩니다.")
 
         sel_disp = st.selectbox(
             label="",
