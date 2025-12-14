@@ -255,8 +255,9 @@ with t_chart:
             st.markdown("**📈 종목 선택**")
         with head_r:
             with st.popover("ⓘ"):
-                st.write("해당 종목들은 2024년 10월부터 수집된 한국인 매수·매도 TOP50 안에 든 종목들입니다.")
-                st.write("데이터는 매일 새벽 00:10에 갱신됩니다.")
+                st.write("SEIBRO에 매일 매일 업데이트 되는")
+                st.write("한국인 매수·매도 TOP50 종목들입니다")
+                st.write("데이터는 2024년 10월 부터 수집되었고,매일 새벽 00:10에 갱신됩니다.")
 
         sel_disp = st.selectbox(
             label="",
