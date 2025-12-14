@@ -17,6 +17,22 @@ FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubu
 "'AppleGothic', 'Nanum Gothic', sans-serif"
 
 st.set_page_config(page_title="리버스 개미 대시보드", layout="wide")
+# ───────────────────────────
+# 🎨 컬러(여기만 바꾸면 전체 반영)
+# ───────────────────────────
+
+COLOR_BUY  = "#d62728"   # 순매수(+) bar
+COLOR_SELL = "#1f77b4"   # 순매수(-) bar
+
+COLOR_TOP50_BAR  = "#1f77b4"   # 인기 TOP50 바
+COLOR_RANK_BAR   = "#1f77b4"   # 순위 바
+
+# MA 라인 색상(고정 매핑)
+MA_COLOR_MAP = {
+    "MA5":  "#9aa0a6",
+    "MA10": "#ff7f0e",
+    "MA20": "#2ca02c",
+}
 
 # ───────────────────────────
 # 경로 설정
@@ -625,19 +641,29 @@ with t_filter:
 with t_guide:
     st.markdown("### 📘 소개 / 가이드")
 
-    st.markdown("""
+    st.markdown(f"""
     <style>
-      .guide-card {
-        border: 1px solid rgba(255,255,255,0.08);
+      .guide-grid {{ display:flex; gap:16px; }}
+      .guide-card {{
         border-radius: 14px;
         padding: 16px 16px 14px 16px;
-        background: rgba(255,255,255,0.03);
         height: 100%;
-        font-family: """ + FONT_STACK + """;
-      }
-      .guide-title { font-size: 18px; font-weight: 800; margin-bottom: 10px; }
-      .guide-body  { font-size: 14px; line-height: 1.55; color: rgba(255,255,255,0.85); }
-      .muted { color: rgba(255,255,255,0.65); }
+        font-family: {FONT_STACK};
+        border: 1px solid rgba(0,0,0,0.08);
+        background: rgba(255,255,255,0.95);
+        color: rgba(0,0,0,0.88);
+      }}
+      .guide-title {{ font-size: 18px; font-weight: 900; margin-bottom: 10px; }}
+      .guide-body  {{ font-size: 14px; line-height: 1.55; color: rgba(0,0,0,0.78); }}
+
+      @media (prefers-color-scheme: dark) {{
+        .guide-card {{
+          border: 1px solid rgba(255,255,255,0.10);
+          background: rgba(255,255,255,0.04);
+          color: rgba(255,255,255,0.90);
+        }}
+        .guide-body {{ color: rgba(255,255,255,0.82); }}
+      }}
     </style>
     """, unsafe_allow_html=True)
 
