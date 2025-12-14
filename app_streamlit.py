@@ -189,19 +189,17 @@ if "favs" not in st.session_state:
 # 기본 설정
 # ───────────────────────────
 qp = st.query_params
-initial_tab = (qp.get("tab") or "chart")
-initial_stock = (qp.get("stock") or "TESLA INC")
 
 min_date = df["날짜"].min().date()
 max_date = df["날짜"].max().date()
 default_start = max(min_date, pd.to_datetime("2025-01-01").date())
 default_end   = max_date
 
-tab_names = ["📈 종목별 차트", "🏆 인기 종목 TOP50", "📊 순매수·순매도 순위", "🧪 조건 필터"]
-tab_choice = st.radio(
-    "보기", tab_names, horizontal=True,
-    index=0 if initial_tab == "chart" else (1 if initial_tab == "top" else 2)
-)
+def fmt_usd(x):
+    try:
+        return f"${x:,.0f}"
+    except Exception:
+        return "-"
 
 # 👉 슬라이더 값을 프로그램적으로 바꿀 때는 슬라이더 key도 함께 업데이트해야 함!
 def _set_date_slider(value_tuple):
@@ -213,6 +211,8 @@ def _set_rank_slider(value_tuple):
     st.session_state["rank_range_slider"] = value_tuple  # ← 실제 위젯 상태 갱신
 
 def compute_last_n_trading_days(stock: str, n: int):
+    if not stock:
+        return
     dts = (
         df.loc[df["종목명"] == stock, "날짜"]
           .dt.date.drop_duplicates().sort_values().tolist()
@@ -224,18 +224,19 @@ def compute_last_n_trading_days(stock: str, n: int):
     start = dts[-n] if len(dts) >= n else dts[0]
     _set_date_slider((start, end))
 
-def fmt_usd(x):
-    try:
-        return f"${x:,.0f}"
-    except Exception:
-        return "-"
+# ───────────────────────────
+# ✅ TAB 5개로 변경
+# ───────────────────────────
+tab_names = ["📈 종목별 차트", "🏆 인기 종목 TOP50", "📊 순매수·순매도 순위", "🧪 조건 필터", "📘 소개/가이드"]
+t_chart, t_top, t_rank, t_filter, t_guide = st.tabs(tab_names)
 
 # ───────────────────────────
-# 📈 종목별 차트
+# 1) 📈 종목별 차트
 # ───────────────────────────
-if tab_choice == tab_names[0]:
+with t_chart:
     st.markdown("### 📊 종목별 순매수 추이")
 
+    # 종목 리스트/매핑
     stocks_disp = sorted(df["표시명"].dropna().unique().tolist())
     code_to_disp = (
         df[["종목명", "표시명"]]
@@ -245,30 +246,59 @@ if tab_choice == tab_names[0]:
     )
     disp_to_code = {v: k for k, v in code_to_disp.items()}
 
+    # ✅ 1) 첫 진입: 종목 공란(플레이스홀더)
+    PLACEHOLDER = "🔎 종목을 선택하세요"
+    stocks_disp_with_placeholder = [PLACEHOLDER] + stocks_disp
+
     stock_param = qp.get("stock")
     if stock_param and stock_param in code_to_disp:
         preselect_disp = code_to_disp[stock_param]
-        default_idx = stocks_disp.index(preselect_disp) if preselect_disp in stocks_disp else 0
+        default_idx = stocks_disp_with_placeholder.index(preselect_disp) if preselect_disp in stocks_disp_with_placeholder else 0
     else:
-        default_idx = 0
+        default_idx = 0  # 플레이스홀더
 
     left, right = st.columns(2)
+
     with left:
-        sel_disp = st.selectbox("📈 종목 선택", stocks_disp, index=default_idx, key="stock_select")
+        # ✅ 2) 종목선택 옆 ⓘ 툴팁(반투명 느낌)
+        head_l, head_r = st.columns([10, 1])
+        with head_l:
+            st.markdown("**📈 종목 선택**")
+        with head_r:
+            with st.popover("ⓘ"):
+                st.write("이 종목들은 2024년 10월부터 한국인 매수·매도 TOP50 안에 든 종목들입니다.")
+                st.write("데이터는 매일 갱신됩니다.")
+
+        sel_disp = st.selectbox(
+            label="",
+            options=stocks_disp_with_placeholder,
+            index=default_idx,
+            key="stock_select_chart",
+        )
+
     with right:
         st.markdown("**⭐ 즐겨찾기**")
         favs: set = st.session_state.get("favs", set())
         fav_disp_list = sorted([code_to_disp[c] for c in favs if c in code_to_disp])
         fav_disp_list = ["(선택)"] + fav_disp_list if fav_disp_list else ["(즐겨찾기 없음)"]
 
-        pick = st.selectbox("즐겨찾기 바로가기", fav_disp_list, key="fav_jump")
+        pick = st.selectbox("즐겨찾기 바로가기", fav_disp_list, key="fav_jump_chart")
         if pick and pick not in ("(선택)", "(즐겨찾기 없음)"):
             sel_disp = pick
 
-        cur_code = disp_to_code.get(sel_disp, sel_disp)
-        is_fav = cur_code in favs
+        # 플레이스홀더면 즐겨찾기 토글 버튼 비활성 느낌만
+        cur_code = disp_to_code.get(sel_disp, sel_disp) if sel_disp != PLACEHOLDER else None
+        is_fav = (cur_code in favs) if cur_code else False
         star_label = "⭐ 즐겨찾기 취소" if is_fav else "☆ 즐겨찾기 추가"
-        st.button(star_label, key="fav_toggle_btn", on_click=toggle_favorite, args=(cur_code,))
+        btn_disabled = (cur_code is None)
+
+        if st.button(star_label, key="fav_toggle_btn_chart", disabled=btn_disabled):
+            toggle_favorite(cur_code)
+
+    # ✅ 선택 전이면 안내만 띄우고 여기서 종료
+    if sel_disp == PLACEHOLDER or not sel_disp:
+        st.info("종목을 선택하거나 검색해서 시작해줘.")
+        st.stop()
 
     sel_stock = disp_to_code.get(sel_disp, sel_disp)
 
@@ -278,15 +308,15 @@ if tab_choice == tab_names[0]:
     Toggle = getattr(st, "toggle", st.checkbox)
 
     col1, col2, col3, col4, spacer, col5, col6, col7 = st.columns([1, 1, 1, 1, 3, 1, 1, 1])
-    with col1:  st.button("1주 (5일)",  key="btn_5",  on_click=compute_last_n_trading_days, args=(sel_stock, 5))
-    with col2:  st.button("1개월 (20일)", key="btn_20", on_click=compute_last_n_trading_days, args=(sel_stock, 20))
-    with col3:  st.button("3개월 (60일)", key="btn_60", on_click=compute_last_n_trading_days, args=(sel_stock, 60))
+    with col1:  st.button("1주 (5일)",    key="btn_5",   on_click=compute_last_n_trading_days, args=(sel_stock, 5))
+    with col2:  st.button("1개월 (20일)", key="btn_20",  on_click=compute_last_n_trading_days, args=(sel_stock, 20))
+    with col3:  st.button("3개월 (60일)", key="btn_60",  on_click=compute_last_n_trading_days, args=(sel_stock, 60))
     with col4:  st.button("6개월 (120일)", key="btn_120", on_click=compute_last_n_trading_days, args=(sel_stock, 120))
 
     with col5:  st.write("**지표**")
-    with col6:  ma5_on  = Toggle("MA5",  value=False, key="tg_ma5")
-    with col7:  ma10_on = Toggle("MA10", value=True,  key="tg_ma10")
-    with spacer: ma20_on = Toggle("MA20", value=True,  key="tg_ma20")
+    with col6:  ma5_on  = Toggle("MA5",  value=False, key="tg_ma5_chart")
+    with col7:  ma10_on = Toggle("MA10", value=True,  key="tg_ma10_chart")
+    with spacer: ma20_on = Toggle("MA20", value=True,  key="tg_ma20_chart")
 
     date_range = st.slider(
         "기간 선택", min_value=min_date, max_value=max_date,
@@ -404,10 +434,11 @@ if tab_choice == tab_names[0]:
     chart = alt.layer(*layers).resolve_scale(y="shared").properties(height=520)
     st.altair_chart(chart, use_container_width=True)
 
+
 # ───────────────────────────
-# 🏆 인기 종목 TOP50
+# 2) 🏆 인기 종목 TOP50
 # ───────────────────────────
-elif tab_choice == tab_names[1]:
+with t_top:
     st.markdown("### 🏆 인기 종목 TOP50 (등장일수 기준)")
     df_period = df[(df["날짜"].dt.date >= default_start) & (df["날짜"].dt.date <= default_end)]
     if df_period.empty:
@@ -435,10 +466,11 @@ elif tab_choice == tab_names[1]:
     )
     st.altair_chart(chart_top, use_container_width=True)
 
+
 # ───────────────────────────
-# 📊 순매수/순매도 순위
+# 3) 📊 순매수/순매도 순위
 # ───────────────────────────
-elif tab_choice == tab_names[2]:
+with t_rank:
     st.markdown("### 📊 순매수·순매도 상위 종목")
 
     col0, col1, col2, col3, col4, col5, _ = st.columns([1, 1, 1, 1, 1, 1, 4.5])
@@ -476,7 +508,8 @@ elif tab_choice == tab_names[2]:
     )
     st.session_state["rank_range"] = rank_range
 
-    mode = st.radio("보기", ["순매수 상위", "순매도 상위"], horizontal=True)
+    # (탭 독립 요구) → 라디오 키도 rank 전용으로 분리
+    mode = st.radio("보기", ["순매수 상위", "순매도 상위"], horizontal=True, key="rank_mode")
 
     start, end = rank_range
     period_df = df[(df["날짜"].dt.date >= start) & (df["날짜"].dt.date <= end)]
@@ -525,23 +558,24 @@ elif tab_choice == tab_names[2]:
     )
     st.altair_chart(chart_rank, use_container_width=True)
 
+
 # ───────────────────────────
-# 🧪 조건 필터
+# 4) 🧪 조건 필터
 # ───────────────────────────
-elif tab_choice == tab_names[3]:
+with t_filter:
     st.markdown("### 🧪 조건 필터 (교집합 AND, 최근 20거래일)")
 
     Toggle = getattr(st, "toggle", st.checkbox)
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         use_ratio = Toggle("최근 20일 매수/매도 ≤ 0.9", value=True,
-                           help="최근 20 거래일간 BUY/SELL 합계 비율")
+                           help="최근 20 거래일간 BUY/SELL 합계 비율", key="f_use_ratio")
     with c2:
-        use_ma5  = Toggle("MA5 ≤ 0",  value=True)
+        use_ma5  = Toggle("MA5 ≤ 0",  value=True, key="f_use_ma5")
     with c3:
-        use_ma10 = Toggle("MA10 ≤ 0", value=False)
+        use_ma10 = Toggle("MA10 ≤ 0", value=False, key="f_use_ma10")
     with c4:
-        use_ma20 = Toggle("MA20 ≤ 0", value=False)
+        use_ma20 = Toggle("MA20 ≤ 0", value=False, key="f_use_ma20")
 
     trade_days = sorted(df["날짜"].dt.date.unique())
     if not trade_days:
@@ -599,7 +633,68 @@ elif tab_choice == tab_names[3]:
     st.dataframe(filtered[show_cols], use_container_width=True, hide_index=True)
 
     names = ["(선택)"] + filtered["표시명"].tolist()
-    pick = st.selectbox("결과에서 선택 → 차트 보기", names, index=0)
+    pick = st.selectbox("결과에서 선택 → 차트 보기", names, index=0, key="filter_pick")
     if pick and pick != "(선택)":
         code = filtered.loc[filtered["표시명"] == pick, "종목명"].iloc[0]
         st.markdown(f"[📈 차트로 이동]({f'?tab=chart&stock={quote_plus(str(code))}'})")
+
+
+# ───────────────────────────
+# 5) 📘 소개/가이드 (가로 카드 3개)
+# ───────────────────────────
+with t_guide:
+    st.markdown("### 📘 소개 / 가이드")
+
+    st.markdown("""
+    <style>
+      .guide-card {
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 14px;
+        padding: 16px 16px 14px 16px;
+        background: rgba(255,255,255,0.03);
+        height: 100%;
+        font-family: """ + FONT_STACK + """;
+      }
+      .guide-title { font-size: 18px; font-weight: 800; margin-bottom: 10px; }
+      .guide-body  { font-size: 14px; line-height: 1.55; color: rgba(255,255,255,0.85); }
+      .muted { color: rgba(255,255,255,0.65); }
+    </style>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown("""
+        <div class="guide-card">
+          <div class="guide-title">📊 이 대시보드는 무엇인가요?</div>
+          <div class="guide-body">
+            한국 개인 투자자들의 <b>미국 주식 순매수·순매도 흐름</b>을 시각화한 데이터 도구입니다.<br/>
+            특정 종목이 <b>언제, 얼마나, 어떤 방향으로</b> 매수·매도되는지 한눈에 확인할 수 있습니다.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("""
+        <div class="guide-card">
+          <div class="guide-title">📈 왜 만들었나요?</div>
+          <div class="guide-body">
+            주가는 항상 펀더멘털만으로 움직이지 않습니다.<br/>
+            관심, 유행, 공포와 기대 같은 <b>집단 심리</b> 역시 가격에 강하게 반영됩니다.<br/><br/>
+            이 도구는 <b>주가 흐름과 투자자 심리(유행)의 상관관계</b>를 관찰하기 위해 만들어졌습니다.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        st.markdown("""
+        <div class="guide-card">
+          <div class="guide-title">🗂 어떤 데이터를 사용하나요?</div>
+          <div class="guide-body">
+            2024년 10월 이후<br/>
+            <b>한국인 순매수·순매도 TOP50</b>에 한 번이라도 포함된 종목들만을 대상으로 합니다.<br/><br/>
+            데이터는 <b>매일 갱신</b>되며,<br/>
+            원본 출처는 <b>SEIBRO</b>입니다.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
