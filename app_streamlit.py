@@ -308,7 +308,7 @@ with t_chart:
             toggle_favorite(cur_code)
 
     if sel_disp == PLACEHOLDER or not sel_disp:
-        st.info("종목을 선택하면 해당 종목의 순매수/순매도 흐름과 MA를 볼 수 있어.")
+        st.info("종목을 선택하여 해당 종목의 순매수,순매도 흐름을 확인하세요!")
     else:
         sel_stock = disp_to_code.get(sel_disp, sel_disp)
 
