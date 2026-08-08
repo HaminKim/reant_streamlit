@@ -11,6 +11,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import ElementClickInterceptedException
 from webdriver_manager.chrome import ChromeDriverManager
 
 URL = "https://seibro.or.kr/websquare/control.jsp?w2xPath=/IPORTAL/user/ovsSec/BIP_CNTS10013V.xml&menuNo=921"
@@ -18,6 +19,22 @@ URL = "https://seibro.or.kr/websquare/control.jsp?w2xPath=/IPORTAL/user/ovsSec/B
 BASE = Path(__file__).resolve().parent
 DATA_DIR = BASE / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def click_safe(driver, wait, xpath, retries=5):
+    """WebSquare 로딩 오버레이(__processbarIFrame)가 클릭을 가로채는 경우가 있어
+    오버레이가 사라질 때까지 기다렸다가 클릭, 그래도 가로채이면 재시도."""
+    for attempt in range(retries):
+        try:
+            wait.until(EC.invisibility_of_element_located(
+                (By.CSS_SELECTOR, "iframe[name='__processbarIFrame']")))
+            el = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            el.click()
+            return
+        except ElementClickInterceptedException:
+            if attempt == retries - 1:
+                raise
+            time.sleep(1)
 
 
 def set_date_js(driver, element_id, ymd):
@@ -52,15 +69,15 @@ def main():
     wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     time.sleep(2)
 
-    driver.find_element(By.XPATH, '//*[@id="a1_radio1_input_0"]').click()
-    driver.find_element(By.XPATH, '//*[@id="area_radio_2_input_2"]').click()
-    driver.find_element(By.XPATH, '//*[@id="area_radio_input_1"]').click()
+    click_safe(driver, wait, '//*[@id="a1_radio1_input_0"]')
+    click_safe(driver, wait, '//*[@id="area_radio_2_input_2"]')
+    click_safe(driver, wait, '//*[@id="area_radio_input_1"]')
 
     # JS로 날짜 입력 (send_keys는 위젯 JS 이벤트를 트리거 안 해서 날짜가 무시됨)
     set_date_js(driver, "sd1_inputCalendar1_input", ymd)
     set_date_js(driver, "sd1_inputCalendar2_input", ymd)
 
-    driver.find_element(By.XPATH, '//*[@id="image2"]').click()
+    click_safe(driver, wait, '//*[@id="image2"]')
     time.sleep(6)
 
     rows = driver.find_elements(By.CSS_SELECTOR, "tbody tr")
