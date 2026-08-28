@@ -4,11 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       ymd:
-        description: "다운로드할 날짜 (YYYYMMDD). 비우면 최근 7일 자동탐색"
+        description: "특정 날짜만 다운로드 (YYYYMMDD). 비우면 누락분 자동 채움"
+        required: false
+        default: ""
+      days:
+        description: "며칠 전까지 훑을지 (비우면 12)"
+        required: false
+        default: ""
+      max:
+        description: "이번 실행에서 받을 최대 날짜 수 (비우면 8)"
         required: false
         default: ""
   schedule:
+    # 00:01 KST / 12:01 KST — 하루 두 번 돌려서 미공시분이 늦게 올라와도 곧 따라잡음
     - cron: "1 15 * * *"
+    - cron: "1 3 * * *"
 
 permissions:
   contents: write
@@ -20,66 +30,87 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
-      # 1️⃣ 레포 체크아웃
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2️⃣ 파이썬 세팅
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 3️⃣ 의존성 설치
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -U pandas lxml selenium webdriver-manager streamlit altair pillow
 
-      # 4️⃣ 다운로더 실행 (최근 7일치 중 성공되면 끝)
-      - name: Run downloader (manual date or find latest available day, KST)
+      # ------------------------------------------------------------------
+      # 다운로더: 누락된 영업일을 개별적으로 추적하며 각각 다운로드
+      #   - 특정 날짜만 실패하면 CSV에 그 날짜가 없는 상태로 남고,
+      #     다음 실행에서 find_missing_days.py 가 다시 집어내 재시도한다. (자가 치유)
+      #   - downloader.py 종료코드: 0=저장, 2=데이터없음(정상), 1=기술적 실패
+      # ------------------------------------------------------------------
+      - name: Download missing days
+        id: dl
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           export TZ=Asia/Seoul
 
-          if [ -n "${{ github.event.inputs.ymd }}" ]; then
-            YMD="${{ github.event.inputs.ymd }}"
-            echo "🟦 Manual download: $YMD"
-            python downloader.py "$YMD" "$YMD"
+          MANUAL="${{ github.event.inputs.ymd }}"
+          DAYS="${{ github.event.inputs.days }}"
+          MAX="${{ github.event.inputs.max }}"
+
+          if [ -n "$MANUAL" ]; then
+            TARGETS="$MANUAL"
+            echo "🟦 수동 지정: $MANUAL"
+          else
+            # find_missing_days 가 죽으면(비정상 종료) job 을 실패시킨다
+            TARGETS="$(python find_missing_days.py "${DAYS}" "${MAX}")"
+          fi
+
+          if [ -z "$TARGETS" ]; then
+            echo "✅ 받을 날짜 없음 — 종료"
+            echo "downloaded=0" >> "$GITHUB_OUTPUT"
+            echo "hard_fail=0"  >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "🔎 Auto: Try downloading the latest available day (up to 7 days back)..."
-          success=0
-          for i in 1 2 3 4 5 6 7; do
-            YMD=$(date -d "$i day ago" +%Y%m%d)
+          echo "받을 날짜:"; echo "$TARGETS"
+
+          downloaded=0
+          hard_fail=0
+          for YMD in $TARGETS; do
             echo ""
-            echo "👉 Try YMD=$YMD"
-            python downloader.py "$YMD" "$YMD" && success=1 && break
+            echo "👉 $YMD"
+            set +e
+            python downloader.py "$YMD"
+            rc=$?
+            set -e
+            case "$rc" in
+              0) echo "  ✅ 저장됨"; downloaded=$((downloaded+1)) ;;
+              2) echo "  ↷ 데이터 없음 — 다음 실행에서 재시도" ;;
+              *) echo "  ✗ 기술적 실패 (rc=$rc)"; hard_fail=1 ;;
+            esac
           done
 
-          if [ "$success" -ne 1 ]; then
-            echo "❌ No downloadable day found in the last 7 days."
-            exit 1
-          fi
+          echo ""
+          echo "요약: 저장 $downloaded 건, 기술적 실패 $hard_fail"
+          echo "downloaded=$downloaded" >> "$GITHUB_OUTPUT"
+          echo "hard_fail=$hard_fail"   >> "$GITHUB_OUTPUT"
 
-
-      # 5️⃣ 콤바인
       - name: Combine data
-        run: |
-          python combine_data.py
+        if: steps.dl.outputs.downloaded != '0'
+        run: python combine_data.py
 
-      # 6️⃣ 정제 + 엔리치
       - name: Clean & enrich
-        run: |
-          python clean_and_enrich.py
+        if: steps.dl.outputs.downloaded != '0'
+        run: python clean_and_enrich.py
 
-      # 7️⃣ 결과 커밋 & 푸시
       - name: Commit & push updated processed files
+        if: steps.dl.outputs.downloaded != '0'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -87,5 +118,18 @@ jobs:
           git add processed/*.csv processed/*.txt processed/*.json || true
           git status
 
-          git commit -m "Daily update: processed data" || echo "No changes to commit"
-          git push
+          if git diff --cached --quiet; then
+            echo "커밋할 변경 없음"
+          else
+            git commit -m "Daily update: processed data"
+            git pull --rebase -X theirs origin main || true
+            git push
+          fi
+
+      # 기술적 실패가 하나라도 있었으면 job 을 빨갛게 표시 (알림용).
+      # 그래도 위에서 성공한 날짜들은 이미 커밋되었고, 실패분은 다음 실행에서 재시도된다.
+      - name: Fail job if any hard error
+        if: steps.dl.outputs.hard_fail == '1'
+        run: |
+          echo "::error::일부 날짜가 재시도 후에도 기술적으로 실패했습니다. 다음 실행에서 자동 재시도됩니다."
+          exit 1
