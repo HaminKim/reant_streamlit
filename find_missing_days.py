@@ -48,6 +48,10 @@ def main():
     lookback = int(sys.argv[1]) if len(sys.argv) >= 2 and sys.argv[1] else 12
     max_out = int(sys.argv[2]) if len(sys.argv) >= 3 and sys.argv[2] else 8
 
+    # 이보다 오래된 '빠진/부분' 날짜는 Seibro 가 끝내 제대로 안 올린 것으로 보고
+    # 더는 자동 재시도하지 않는다(스케줄 빨간불 방지). 정말 필요하면 ymd= 수동 지정.
+    GIVEUP_DAYS = 25
+
     # Seibro 해외주식 보고서는 상위 ~50종목. 이보다 훨씬 적으면
     # 렌더링이 덜 된 상태에서 긁힌 '부분 스크랩'으로 보고 다시 받는다.
     MIN_ROWS = 10
@@ -73,6 +77,9 @@ def main():
             continue
         n = counts.get(d, 0)
         if n >= MIN_ROWS:
+            continue
+        if i > GIVEUP_DAYS:
+            log(f"  ⏭️ {d}: {n}행 — {GIVEUP_DAYS}일 초과라 자동 재시도 제외")
             continue
         if 0 < n < MIN_ROWS:
             log(f"  ⚠️ {d}: {n}행뿐 — 부분 스크랩으로 보고 재수집")
